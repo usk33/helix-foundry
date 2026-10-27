@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createApp } from "../apps/api/src/app.js";
 import { MemoryStore, transaction, resource } from "../apps/api/src/store.js";
 import { config } from "../apps/api/src/config.js";
+import { finishWorkspaceDeletion } from "../apps/api/src/workspace-deletion.js";
 const store = new MemoryStore();
 let app: Awaited<ReturnType<typeof createApp>>, scope: string;
 beforeAll(async () => {
@@ -386,6 +390,113 @@ describe("workspace boundaries and actions", () => {
         )
       ).statusCode,
     ).toBe(403);
+  });
+  it("deletes a workspace safely after its active job finishes", async () => {
+    const fresh = await freshApp();
+    const previousDataDir = config.dataDir;
+    const dataDir = await mkdtemp(join(tmpdir(), "foundry-workspace-delete-"));
+    try {
+      config.dataDir = dataDir;
+      const local = async (method: any, path: string, payload?: unknown) =>
+        fresh.app.inject({
+          method,
+          url: "/api/v1" + path,
+          payload: payload as any,
+        });
+      const first = (await local("GET", "/me")).json().workspaces[0];
+      expect((await local("DELETE", `/workspaces/${first.id}`)).statusCode).toBe(
+        409,
+      );
+
+      const created = await local("POST", "/workspaces", {
+        name: "Delete me",
+      });
+      const workspaceId = created.json().id as string;
+      const tokenResponse = await local(
+        "POST",
+        `/workspaces/${workspaceId}/tokens`,
+        { name: "Delete test", readOnly: false },
+      );
+      const rawToken = tokenResponse.json().token as string;
+      const auth = { authorization: `Bearer ${rawToken}` };
+      expect(
+        (
+          await fresh.app.inject({
+            method: "DELETE",
+            url: `/api/v1/workspaces/${workspaceId}`,
+            headers: auth,
+          })
+        ).statusCode,
+      ).toBe(403);
+
+      await transaction(fresh.store, workspaceId, async (tx) => {
+        tx.put(
+          resource(workspaceId, "dataset", "Imported data", {}, "dataset-1"),
+        );
+        tx.put(
+          resource(
+            workspaceId,
+            "job",
+            "Active import",
+            { status: "running", leaseUntil: Date.now() + 60_000 },
+            "job-1",
+          ),
+        );
+      });
+      for (const directory of ["datasets", "incoming", "results"]) {
+        const path = join(dataDir, directory, workspaceId);
+        await mkdir(path, { recursive: true });
+        await writeFile(join(path, "staged-file"), "workspace data");
+      }
+
+      const deletion = await local("DELETE", `/workspaces/${workspaceId}`);
+      expect(deletion.statusCode).toBe(202);
+      expect((await local("GET", "/me")).json().workspaces).toHaveLength(1);
+      expect(
+        (
+          await local("GET", `/workspaces/${workspaceId}/overview`)
+        ).statusCode,
+      ).toBe(404);
+      expect(await finishWorkspaceDeletion(fresh.store, workspaceId)).toBe(
+        false,
+      );
+      expect(await fresh.store.get("global", workspaceId)).toBeDefined();
+
+      await transaction(fresh.store, workspaceId, async (tx) => {
+        const job = await tx.get("job-1");
+        if (job) tx.update(job, { ...job.data, status: "succeeded" });
+      });
+      expect(await finishWorkspaceDeletion(fresh.store, workspaceId)).toBe(
+        true,
+      );
+      expect(await fresh.store.list(workspaceId)).toHaveLength(0);
+      expect(await fresh.store.get("global", workspaceId)).toBeUndefined();
+      expect(
+        (await fresh.store.list("global", "token")).some(
+          (token) => token.data.workspaceId === workspaceId,
+        ),
+      ).toBe(false);
+      expect(
+        (await local("GET", "/me")).json().workspaces.map((w: any) => w.id),
+      ).toEqual([first.id]);
+      expect(
+        (
+          await fresh.app.inject({
+            method: "GET",
+            url: `/api/v1/workspaces/${workspaceId}/overview`,
+            headers: auth,
+          })
+        ).statusCode,
+      ).toBe(401);
+      for (const directory of ["datasets", "incoming", "results"])
+        await expect(
+          access(join(dataDir, directory, workspaceId)),
+        ).rejects.toThrow();
+    } finally {
+      config.dataDir = previousDataDir;
+      await rm(dataDir, { recursive: true, force: true });
+      await fresh.app.close();
+    }
   });
 });
 

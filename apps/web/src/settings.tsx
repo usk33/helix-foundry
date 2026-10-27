@@ -13,18 +13,20 @@ import {
   ShieldCheck,
   Sparkles,
   Terminal,
+  Trash2,
 } from "lucide-react";
 import { useWorkspace, useAction, PageHeader } from "./ui";
 import { Button, ConfirmDialog } from "./kit";
 import { api } from "./api";
 export default function SettingsPage() {
-  const { id, role } = useWorkspace(),
+  const { id, name, role } = useWorkspace(),
     action = useAction(),
     [tab, setTab] = useState(
       new URLSearchParams(location.search).get("tab") || "models",
     ),
     [issued, setIssued] = useState<{ token: string; id: string } | null>(null),
-    [revoking, setRevoking] = useState<ApiTokenMetadata | null>(null);
+    [revoking, setRevoking] = useState<ApiTokenMetadata | null>(null),
+    [deleting, setDeleting] = useState(false);
   const owner = role === "owner";
   const tokens = useQuery({
     queryKey: [id, "developer-tokens"],
@@ -204,6 +206,59 @@ export default function SettingsPage() {
             </div>
           </section>
         </>
+      )}
+      {owner && (
+        <section className="panel settings-panel" aria-label="Delete workspace">
+          <div className="pad">
+            <h3>
+              <Trash2 size={17} /> Delete workspace
+            </h3>
+            <p className="muted">
+              Permanently remove this workspace, its imported data, saved
+              credentials, and API tokens. Other workspaces are not affected.
+            </p>
+            <p className="muted">
+              Keep at least one workspace. Create another before deleting the
+              last one.
+            </p>
+            <Button
+              variant="danger"
+              onClick={() => setDeleting(true)}
+              aria-label={`Delete workspace ${name}`}
+            >
+              Delete workspace
+            </Button>
+          </div>
+        </section>
+      )}
+      {deleting && (
+        <ConfirmDialog
+          title={`Delete “${name}”?`}
+          description="This permanently removes the workspace and its data. The deletion runs in the background and cannot be undone."
+          confirmLabel="Delete workspace"
+          tone="danger"
+          requireText={name}
+          pending={action.pending}
+          onConfirm={async () => {
+            const result = await action.run(
+              async () => {
+                await api(`/workspaces/${id}`, {}, "DELETE");
+                const me = await api("/me");
+                const next = me.workspaces[0];
+                if (!next) throw new Error("No workspace remains to switch to.");
+                localStorage.setItem("foundry.workspace", next.id);
+                window.location.assign("/");
+              },
+              "Workspace deletion started",
+            );
+            if (result) setDeleting(false);
+          }}
+          onCancel={() => setDeleting(false)}
+        >
+          <p>
+            You will be switched to another workspace while deletion finishes.
+          </p>
+        </ConfirmDialog>
       )}
     </>
   );

@@ -15,6 +15,7 @@ import { queueCleanup, runCleanupJob } from "./cleanup.js";
 import { sweepResults } from "./results.js";
 import { reduceStoredDiscovery } from "./source-discovery.js";
 import { compactStoredSamples } from "./dataset-samples.js";
+import { finishWorkspaceDeletion } from "./workspace-deletion.js";
 // A job gets three attempts, whether it throws or its worker dies mid-run.
 const MAX_ATTEMPTS = 3;
 // Queue, leases and retries live here; each job type's work lives with its area.
@@ -72,6 +73,10 @@ export function startWorker(store: Store) {
       const workspaces = await store.list("global", "workspaceRef");
       for (const workspace of workspaces) {
         const scope = workspace.id;
+        if (workspace.data.deletingAt) {
+          await finishWorkspaceDeletion(store, scope);
+          continue;
+        }
         if (!swept.has(scope)) {
           swept.add(scope);
           // A pass that fails runs again at the next start; jobs still run.
@@ -97,7 +102,12 @@ export function startWorker(store: Store) {
           if (scheduledRefresh(source) || needsChangeRefresh(source)) {
             await transaction(store, scope, async (tx) => {
               const s = await tx.get(source.id);
-              if (!s || (!scheduledRefresh(s) && !needsChangeRefresh(s)))
+              const activeWorkspace = await tx.get("workspace");
+              if (
+                activeWorkspace?.data.deletingAt ||
+                !s ||
+                (!scheduledRefresh(s) && !needsChangeRefresh(s))
+              )
                 return;
               const pending = (await tx.list("job")).find(
                 (j) =>
@@ -151,7 +161,9 @@ export function startWorker(store: Store) {
         if (candidate) {
           const claimed = await transaction(store, scope, async (tx) => {
             const r = await tx.get(candidate.id);
+            const workspace = await tx.get("workspace");
             if (
+              workspace?.data.deletingAt ||
               !r ||
               !["queued", "running"].includes(r.data.status) ||
               (r.data.status === "running" && r.data.leaseUntil > Date.now())

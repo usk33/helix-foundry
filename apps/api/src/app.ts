@@ -34,6 +34,7 @@ import { registerOntologyRoutes } from "./routes/ontology.js";
 import { listRecords } from "./records.js";
 import { registerAnalystRoutes } from "./routes/analyst.js";
 import { registerWorkspaceRoutes } from "./routes/workspace.js";
+import { finishWorkspaceDeletion } from "./workspace-deletion.js";
 // Helix Foundry runs on one computer for one person, with no sign-in. That
 // person is the installation's owner; their session never expires because
 // provider sign-in (hosting.ts) is bound to a session.
@@ -160,6 +161,12 @@ export async function createApp(store: Store) {
       scope = req.params.w;
     const member = await store.get("global", `${a.user.id}:${scope}`);
     assert(member?.kind === "member", "Workspace not found", 404);
+    const reference = await store.get("global", scope);
+    assert(
+      reference?.kind === "workspaceRef" && !reference.data.deletingAt,
+      "Workspace not found",
+      404,
+    );
     assert(
       !a.session.data.workspaceId || a.session.data.workspaceId === scope,
       "Workspace not found",
@@ -246,6 +253,7 @@ export async function createApp(store: Store) {
           ),
         );
       for (const ref of await tx.list("workspaceRef")) {
+        if (ref.data.deletingAt) continue;
         const m = await tx.get(`${u.id}:${ref.id}`);
         if (m?.kind === "member" && m.data.role === "owner") continue;
         tx.put(
@@ -271,9 +279,15 @@ export async function createApp(store: Store) {
   app.get("/api/health", async () => ({ ok: true, service: "helix-foundry" }));
   app.get("/api/v1/me", async (req) => {
     const a = await user(req),
+      activeWorkspaces = new Set(
+        (await store.list("global", "workspaceRef"))
+          .filter((ref) => !ref.data.deletingAt)
+          .map((ref) => ref.id),
+      ),
       members = (await store.list("global", "member")).filter(
         (m) =>
           m.data.userId === a.user.id &&
+          activeWorkspaces.has(m.data.workspaceId) &&
           (!a.session.data.workspaceId ||
             m.data.workspaceId === a.session.data.workspaceId),
       );
@@ -299,6 +313,31 @@ export async function createApp(store: Store) {
       a.user,
       z.object({ name: z.string().min(1).max(100) }).parse(req.body).name,
     );
+  });
+  app.delete("/api/v1/workspaces/:w", async (req: any, reply) => {
+    const a = await access(req, "owner");
+    assert(
+      a.session.kind === "session",
+      "Workspace deletion requires a local browser session",
+      403,
+    );
+    await transaction(store, "global", async (tx) => {
+      const reference = await tx.get(a.scope);
+      assert(reference?.kind === "workspaceRef", "Workspace not found", 404);
+      if (reference.data.deletingAt) return;
+      const active = (await tx.list("workspaceRef")).filter(
+        (ref) => !ref.data.deletingAt,
+      );
+      assert(active.length > 1, "Create another workspace before deleting this one", 409);
+      tx.update(reference, { ...reference.data, deletingAt: Date.now() });
+    });
+    await transaction(store, a.scope, async (tx) => {
+      const workspace = await tx.get("workspace");
+      assert(workspace?.kind === "workspace", "Workspace not found", 404);
+      if (!workspace.data.deletingAt)
+        tx.update(workspace, { ...workspace.data, deletingAt: Date.now() });
+    });
+    return reply.code(202).send({ status: "deleting" });
   });
   app.get("/api/v1/workspaces/:w/resources/:kind", async (req: any) => {
     const a = await access(req);

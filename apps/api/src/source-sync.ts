@@ -548,6 +548,7 @@ export function startChangeStreams(store: Store) {
     try {
       const present = new Set<string>();
       for (const w of await store.list("global", "workspaceRef")) {
+        if (w.data.deletingAt) continue;
         for (const source of await store.list(w.id, "source")) {
           const key = w.id + ":" + source.id;
           present.add(key);

@@ -36,6 +36,7 @@ it("coalesces scheduled imports with queued work and completes a durable job", a
         {
           kind: "mysql",
           secret: seal({ database: "fixture" }),
+          sync: { mode: "snapshot", recheckAt: Date.now() + 60_000 },
           schedule: "* * * * *",
           nextRun: 0,
         },
@@ -85,7 +86,11 @@ it("recovers an interrupted import lease without creating another operation", as
         scope,
         "source",
         "Orders",
-        { kind: "mysql", secret: seal({ database: "fixture" }) },
+        {
+          kind: "mysql",
+          secret: seal({ database: "fixture" }),
+          sync: { mode: "snapshot", recheckAt: Date.now() + 60_000 },
+        },
         "source",
       ),
     );
