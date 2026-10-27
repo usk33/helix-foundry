@@ -26,7 +26,7 @@ const guides: Record<string, Guide> = {
         mode first if you want to try Foundry without live data.
       </li>
       <li>
-        Name it “Helix Foundry”, then set <strong>Read</strong> for the objects
+        Name it “Enhansd Foundry”, then set <strong>Read</strong> for the objects
         you want (for example Customers, Products, Subscriptions, Invoices,
         Charges, Payment Intents, Disputes, Payouts, Balance). Leave everything
         else as <strong>None</strong>.
