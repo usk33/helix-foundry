@@ -25,6 +25,19 @@
 .ontology-schema {
   margin-top: 16px;
 }
+.on-relationship-rules {
+  margin-top: 16px;
+  overflow-wrap: anywhere;
+}
+.on-relationship-rules > div + div {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hf-border);
+}
+.on-relationship-form fieldset,
+.on-relationship-form .form-grid > div {
+  min-width: 0;
+}
 
 /* Explorer graph */
 .og {

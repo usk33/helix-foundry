@@ -48,6 +48,41 @@ The sidebar has **Home**, **Ontology**, **Data** and **Analyst**, with **Setting
 - **Proposals** (`/proposals`) is where definitions from the assistant wait for review before publication. Guided setup publishes its validated build of the confirmed ontology automatically.
 - **Settings** has **AI & models** (choose Local, Claude, OpenAI, Azure OpenAI, Amazon Bedrock or Custom and enter an API key) and **Developer tools** (create API tokens, inspect their access level, and revoke unused tokens). Other AI settings are set through the API; see [AI and review](#ai-and-review).
 
+### Defining relationships after setup
+
+On the Ontology schema page, choose **Define relationship**. Name the rule,
+choose the source and target entity types and their matching fields, and choose
+many-to-one or one-to-one. Column types and sample values help identify the fields;
+two fields named `id` do not necessarily identify the same thing.
+
+**Preview relationship** validates the complete datasets, not just a sample.
+It reports matched records, generated pairs, null/empty fields, unmatched values,
+and ambiguous target matches, with up to ten matching and unmatched examples.
+Multiple targets for a source block publication; one-to-one also rejects multiple
+sources for a matched target. Comparisons use database equality without fuzzy
+matching or trimming, and null/empty values are not linked. Missing targets are
+not created. Preview all checks, then **Publish relationship**. Publication
+rebuilds the whole graph using the existing definitions and switches it atomically;
+stale data or a newer publication requires a new preview.
+
+**Keep relationships updated when source data changes** is enabled for new rules.
+When any published input snapshot changes, the worker coalesces updates into a
+durable refresh job, revalidates the whole published bundle, and republishes it
+without AI calls. This updates all generated records and links in that bundle,
+including rules without automatic refresh enabled. Schema-changing pending
+snapshots still require acceptance first. Failed validation keeps the previous
+graph active; job status/errors appear under **Relationship rules** and in the
+normal job/finding surfaces. Correct the data, or edit and republish the rule.
+Existing rules do not enable automatic refresh until explicitly edited to do so.
+
+Use **Edit [rule name]** to inspect the last publication's coverage, change the
+mapping, or preview and publish removal. Removal deletes generated links, not
+records. **Workspace action -> Link individual records / Unlink individual
+records** changes just one pair and remains a separate manual override.
+Manual overrides survive refresh, rule removal, and renaming; they are not
+included in rule preview counts. Source systems and imported data are never
+modified by these actions.
+
 ## Guided setup and sample data
 
 While a workspace's setup is incomplete, opening the app goes straight to setup. There is no account to create. Setup has three steps.

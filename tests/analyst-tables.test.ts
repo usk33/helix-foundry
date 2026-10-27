@@ -84,6 +84,118 @@ it("answers with tables named readably, loading every table the SQL names", asyn
   ]);
 });
 
+it("repairs a query that invents a lookup table using the available datasets", async () => {
+  const prices = (
+    await request("POST", "/ingest", {
+      name: "daily_price_small",
+      rows: [
+        { ticker_id: "TSLA", trade_date: "2026-10-26", close: 452.31 },
+        { ticker_id: "TSLA", trade_date: "2026-10-27", close: 455.72 },
+      ],
+    })
+  ).json().id as string;
+  const bad = {
+    title: "Latest Tesla price",
+    sql: "SELECT close AS price FROM daily_price_small WHERE ticker_id = (SELECT ticker_id FROM security WHERE ticker = 'TSLA') ORDER BY trade_date DESC LIMIT 1",
+    inputs: [prices],
+    assumptions: [],
+  };
+  const fixed = {
+    ...bad,
+    sql: "SELECT close AS price FROM daily_price_small WHERE ticker_id = 'TSLA' ORDER BY trade_date DESC LIMIT 1",
+  };
+  let repairSystem = "";
+  vi.spyOn(Provider.prototype, "generate").mockImplementation(
+    async (system: string, context: any) => {
+      if (system.includes("Choose answer"))
+        return { value: { intent: "answer" }, tokens: 1 };
+      if (system.includes("The query failed with the error in repair")) {
+        repairSystem = system;
+        expect(context.repair.error).toMatch(/security does not exist/i);
+        return { value: fixed, tokens: 1 };
+      }
+      if (system.includes("Answer the question"))
+        return { value: bad, tokens: 1 };
+      return {
+        value: {
+          summary: "Tesla's latest recorded price was 455.72.",
+          highlights: [],
+        },
+        tokens: 1,
+      };
+    },
+  );
+  const run = (
+    await request("POST", "/assistant/runs", {
+      goal: "What is the latest traded price for Tesla?",
+      intent: "auto",
+    })
+  ).json();
+  await buildWorkspace(store, scope, run.id);
+  const done = (await store.get(scope, run.id))!;
+  expect(done.data.status, done.data.error).toBe("succeeded");
+  expect(done.data.answer.rows).toEqual([{ price: 455.72 }]);
+  expect(repairSystem).toContain(
+    "The only available dataset tables are: daily_price_small",
+  );
+});
+
+it("asks again when a repair repeats the SQL that failed", async () => {
+  const prices = (
+    await request("POST", "/ingest", {
+      name: "daily_price_small",
+      rows: [{ ticker_id: "TSLA", trade_date: "2026-10-27", close: 455.72 }],
+    })
+  ).json().id as string;
+  const bad = {
+    title: "Latest Tesla price",
+    sql: "SELECT close AS price FROM daily_price_small WHERE ticker_id = (SELECT ticker_id FROM security WHERE ticker = 'TSLA') ORDER BY trade_date DESC LIMIT 1",
+    inputs: [prices],
+    assumptions: [],
+  };
+  const fixed = {
+    ...bad,
+    sql: "SELECT close AS price FROM daily_price_small WHERE ticker_id = 'TSLA' ORDER BY trade_date DESC LIMIT 1",
+  };
+  let repeatedPrompt = "";
+  vi.spyOn(Provider.prototype, "generate").mockImplementation(
+    async (system: string, context: any) => {
+      if (system.includes("Choose answer"))
+        return { value: { intent: "answer" }, tokens: 1 };
+      if (system.includes("The previous repair returned the same SQL")) {
+        repeatedPrompt = system;
+        expect(context.repair.error).toMatch(
+          /previous repair returned the unchanged failing SQL/i,
+        );
+        return { value: fixed, tokens: 1 };
+      }
+      if (
+        system.includes("Answer the question") ||
+        system.includes("The query failed with the error in repair")
+      )
+        return { value: bad, tokens: 1 };
+      return {
+        value: {
+          summary: "Tesla's latest recorded price was 455.72.",
+          highlights: [],
+        },
+        tokens: 1,
+      };
+    },
+  );
+  const run = (
+    await request("POST", "/assistant/runs", {
+      goal: "What is the latest traded price for Tesla?",
+      intent: "auto",
+    })
+  ).json();
+  await buildWorkspace(store, scope, run.id);
+  const done = (await store.get(scope, run.id))!;
+  expect(done.data.status, done.data.error).toBe("succeeded");
+  expect(done.data.answer.rows).toEqual([{ price: 455.72 }]);
+  expect(repeatedPrompt).toContain("Do not return it again");
+});
+
 it("keeps the table name of a dataset whose name is too long for an alias", async () => {
   const id = (
     await request("POST", "/ingest", {

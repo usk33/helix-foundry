@@ -120,10 +120,19 @@ export function ConnectData({
     action.run(() =>
       api(`/workspaces/${id}/onboarding/imports/${job.id}/${verb}`, {}),
     );
-  const waiting =
+  const pendingImports =
     state?.imports.filter((job) =>
       ["queued", "running"].includes(job.data.status),
-    ).length || 0;
+    ) || [];
+  const runningImports = pendingImports.filter(
+    (job) => job.data.status === "running",
+  ).length;
+  const queuedImports = pendingImports.length - runningImports;
+  const waitingGroup = groups.find((group) =>
+    group.imports.some((job) =>
+      ["queued", "running"].includes(job.data.status),
+    ),
+  );
   const needsAttention = groups.filter(
     (group) =>
       group.imports.some((job) =>
@@ -257,9 +266,20 @@ export function ConnectData({
               Review
             </button>
           </p>
-        ) : waiting > 0 ? (
+        ) : pendingImports.length > 0 ? (
           <p className="connection-notice" role="status">
-            Importing your data… You can add another source.
+            {runningImports > 0
+              ? `Importing your data (${runningImports} running${queuedImports ? `, ${queuedImports} queued` : ""}).`
+              : `${queuedImports} ${queuedImports === 1 ? "import is" : "imports are"} queued, waiting for the worker. Other workspace tasks may be finishing.`}{" "}
+            You can add another source.{" "}
+            {waitingGroup && (
+              <button
+                className="text-button"
+                onClick={() => open(waitingGroup.kind)}
+              >
+                View import progress
+              </button>
+            )}
           </p>
         ) : null)}
       {(kind || hostingProvider || onClose) && (

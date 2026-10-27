@@ -39,8 +39,8 @@ export default function ObjectActionForm({
           }}
         >
           <option value="create">Create a record</option>
-          <option value="link">Create a relationship</option>
-          <option value="unlink">Remove a relationship</option>
+          <option value="link">Link individual records</option>
+          <option value="unlink">Unlink individual records</option>
         </select>
       </label>
       {operation === "create" ? (
@@ -80,6 +80,10 @@ export default function ObjectActionForm({
         </>
       ) : (
         <>
+          <p className="muted">
+            This changes one pair of records. To link all matching records, use
+            Define relationship on the Ontology page.
+          </p>
           <label>
             Relationship name
             <input

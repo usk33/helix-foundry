@@ -16,6 +16,10 @@ import { sweepResults } from "./results.js";
 import { reduceStoredDiscovery } from "./source-discovery.js";
 import { compactStoredSamples } from "./dataset-samples.js";
 import { finishWorkspaceDeletion } from "./workspace-deletion.js";
+import {
+  queueRelationshipRefresh,
+  runRelationshipRefresh,
+} from "./relationship-rules.js";
 // A job gets three attempts, whether it throws or its worker dies mid-run.
 const MAX_ATTEMPTS = 3;
 // Queue, leases and retries live here; each job type's work lives with its area.
@@ -28,6 +32,7 @@ const jobHandlers: Record<
   sync: runSyncJob,
   pipeline: runPipelineJob,
   cleanup: runCleanupJob,
+  relationship_refresh: runRelationshipRefresh,
 };
 // Setup's build from a confirmed ontology publishes the active versions it
 // validated, so a sync of one of its inputs meanwhile fails it with "Inputs
@@ -64,6 +69,7 @@ export function startWorker(store: Store) {
   const stopStreams = startChangeStreams(store);
   // Workspaces checked for records older releases left behind, once per start.
   const swept = new Set<string>();
+  let lastServed: string | undefined;
   let busy = false,
     stopped = false;
   const tick = async () => {
@@ -71,10 +77,35 @@ export function startWorker(store: Store) {
     busy = true;
     try {
       const workspaces = await store.list("global", "workspaceRef");
-      for (const workspace of workspaces) {
+      // Continue after the last claimed workspace so an earlier workspace's
+      // scheduled work cannot starve imports in later workspaces.
+      const start = workspaces.findIndex((w) => w.id === lastServed) + 1;
+      const ordered = [
+        ...workspaces.slice(start),
+        ...workspaces.slice(0, start),
+      ];
+      for (const workspace of ordered) {
         const scope = workspace.id;
         if (workspace.data.deletingAt) {
-          await finishWorkspaceDeletion(store, scope);
+          await finishWorkspaceDeletion(store, scope).catch(async (error) => {
+            const message =
+              error instanceof Error
+                ? error.message
+                : "Workspace deletion failed";
+            console.error("Worker: workspace deletion:", scope, message);
+            await transaction(store, "global", async (tx) => {
+              const reference = await tx.get(scope);
+              if (reference?.kind === "workspaceRef")
+                tx.update(reference, {
+                  ...reference.data,
+                  deletion: {
+                    ...reference.data.deletion,
+                    error: message,
+                    updatedAt: Date.now(),
+                  },
+                });
+            });
+          });
           continue;
         }
         if (!swept.has(scope)) {
@@ -135,6 +166,7 @@ export function startWorker(store: Store) {
               tx.update(s, { ...s.data, nextRun });
             });
           }
+        await queueRelationshipRefresh(store, scope);
         const runs = await store.list(scope, "run"),
           jobs = await store.list(scope, "job"),
           inputs = await buildSources(store, scope, runs);
@@ -209,6 +241,7 @@ export function startWorker(store: Store) {
             return true;
           });
           if (!claimed) continue;
+          lastServed = scope;
           const heartbeat = setInterval(
             () =>
               void transaction(store, scope, async (tx) => {

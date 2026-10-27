@@ -1,6 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import type { Resource } from "../../../../packages/shared/src/index.js";
+import {
+  RelationshipChangeSchema,
+  type Resource,
+} from "../../../../packages/shared/src/index.js";
+import {
+  relationshipRules,
+  previewRelationshipChange,
+} from "../relationship-rules.js";
 import { listRecords, recordLabel, snapshotGraph } from "../records.js";
 import { assert, digest } from "../security.js";
 import { resource, transaction, type Store } from "../store.js";
@@ -13,6 +20,8 @@ import {
 import type { RequestSchemas, RouteDeps } from "./deps.js";
 
 export const ontologySchemas: RequestSchemas = {
+  "POST /api/v1/workspaces/:w/ontology/relationships/preview":
+    RelationshipChangeSchema,
   "POST /api/v1/workspaces/:w/actions/change/preview": ObjectActionSchema,
   "POST /api/v1/workspaces/:w/actions/change/execute": z.object({
     action: ObjectActionSchema,
@@ -39,6 +48,21 @@ export function registerOntologyRoutes(
   deps: RouteDeps,
 ) {
   const { access } = deps;
+  app.get("/api/v1/workspaces/:w/ontology/relationships", async (req) => {
+    const a = await access(req);
+    return relationshipRules(store, a.scope);
+  });
+  app.post(
+    "/api/v1/workspaces/:w/ontology/relationships/preview",
+    async (req) => {
+      const a = await access(req, "editor");
+      return previewRelationshipChange(
+        store,
+        a.scope,
+        RelationshipChangeSchema.parse(req.body),
+      );
+    },
+  );
   app.get("/api/v1/workspaces/:w/records/:logicalId", async (req: any) => {
     const a = await access(req),
       ws = await store.get(a.scope, "workspace");

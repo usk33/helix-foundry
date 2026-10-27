@@ -46,6 +46,13 @@ export type Neighborhood = {
 export interface Store {
   init(): Promise<void>;
   list(scope: string, kind?: string): Promise<Resource[]>;
+  // Bounded deletion candidates, without loading stored documents. The
+  // workspace marker is excluded so interrupted deletion can resume.
+  deletionKeys(
+    scope: string,
+    kind: string | undefined,
+    limit: number,
+  ): Promise<string[]>;
   get(scope: string, id: string): Promise<Resource | undefined>;
   getMany(scope: string, ids: string[]): Promise<(Resource | undefined)[]>;
   commit(scope: string, version: number, changes: Change[]): Promise<boolean>;
@@ -366,6 +373,29 @@ export class HelixStore implements Store {
     return r.records?.[0]?.doc
       ? (JSON.parse(r.records[0].doc) as Resource)
       : undefined;
+  }
+  async deletionKeys(scope: string, kind: string | undefined, limit: number) {
+    const r = await this.read(
+      readBatch()
+        .varAs(
+          "keys",
+          g()
+            .nWithLabelWhere(
+              "FoundryRecord",
+              SourcePredicate.eq(
+                kind ? "scopeKind" : "scope",
+                kind ? `${scope}:${kind}` : scope,
+              ),
+            )
+            .where(Predicate.neq("key", `${scope}:workspace`))
+            .limit(limit)
+            .valueMap(["key"]),
+        )
+        .returning(["keys"]),
+    );
+    return (r.keys || []).map((r: { key: string }) =>
+      r.key.slice(scope.length + 1),
+    );
   }
   async getMany(scope: string, ids: string[]) {
     const found = new Map<string, Resource>();
@@ -884,6 +914,20 @@ export class MemoryStore implements Store {
   }
   async get(s: string, id: string) {
     return structuredClone(this.rows.get(s + ":" + id));
+  }
+  async deletionKeys(scope: string, kind: string | undefined, limit: number) {
+    const keys: string[] = [];
+    for (const r of this.rows.values()) {
+      if (
+        r.workspaceId === scope &&
+        r.id !== "workspace" &&
+        (!kind || r.kind === kind)
+      ) {
+        keys.push(r.id);
+        if (keys.length >= limit) break;
+      }
+    }
+    return keys;
   }
   async version(s: string) {
     return this.versions.get(s) || 0;

@@ -74,6 +74,89 @@ it("coalesces scheduled imports with queued work and completes a durable job", a
     stop();
   }
 });
+it.each([false, true])(
+  "runs another workspace's import while deletion is pending (failure: %s)",
+  async (fail) => {
+    const store = new MemoryStore();
+    const before = imports.count;
+    await transaction(store, "global", async (tx) => {
+      tx.put(
+        resource(
+          "global",
+          "workspaceRef",
+          "Delete",
+          { deletingAt: 1 },
+          "deleting",
+        ),
+      );
+      tx.put(resource("global", "workspaceRef", "Import", {}, "importing"));
+    });
+    await transaction(store, "deleting", async (tx) => {
+      tx.put(
+        resource(
+          "deleting",
+          "workspace",
+          "Delete",
+          { deletingAt: 1 },
+          "workspace",
+        ),
+      );
+      for (let i = 0; i < 1500; i++)
+        tx.put(resource("deleting", "object", "Record", {}, "o" + i));
+    });
+    if (fail)
+      vi.spyOn(store, "deletionKeys").mockRejectedValue(
+        new Error("Deletion fixture failed"),
+      );
+    await transaction(store, "importing", async (tx) => {
+      tx.put(
+        resource(
+          "importing",
+          "source",
+          "Orders",
+          {
+            kind: "mysql",
+            secret: seal({ database: "fixture" }),
+            sync: { mode: "snapshot", recheckAt: Date.now() + 60_000 },
+          },
+          "source",
+        ),
+      );
+      tx.put(
+        resource(
+          "importing",
+          "job",
+          "Import",
+          {
+            type: "sync",
+            sourceId: "source",
+            status: "queued",
+          },
+          "job",
+        ),
+      );
+    });
+    const stop = startWorker(store);
+    try {
+      await vi.waitFor(
+        async () => {
+          expect((await store.get("importing", "job"))?.data.status).toBe(
+            "succeeded",
+          );
+        },
+        { timeout: 5000 },
+      );
+      expect(imports.count).toBe(before + 1);
+      expect(await store.get("deleting", "workspace")).toBeDefined();
+      const progress = (await store.get("global", "deleting"))?.data.deletion;
+      if (fail) expect(progress.error).toBe("Deletion fixture failed");
+      else expect(progress.removed).toBeGreaterThan(0);
+    } finally {
+      stop();
+      vi.restoreAllMocks();
+    }
+  },
+);
 it("recovers an interrupted import lease without creating another operation", async () => {
   const store = new MemoryStore(),
     scope = "recovery";

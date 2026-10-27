@@ -4,6 +4,7 @@ import { currentBundle } from "./assistant.js";
 import { execute } from "./executor.js";
 import { digest } from "./security.js";
 import type { Store } from "./store.js";
+import { relationshipJoin } from "./relationship-sql.js";
 
 // The record list of the active workspace. Records are the rows of each
 // type's dataset snapshot that publication read, so the executor filters,
@@ -376,7 +377,7 @@ export async function snapshotGraph(
     if (!from || !to || !a || !b) continue;
     const fromKey = `CAST(a.${q(from.data.primaryKey)} AS VARCHAR)`,
       toKey = `CAST(b.${q(to.data.primaryKey)} AS VARCHAR)`,
-      join = `FROM ${q(a)} a JOIN ${q(b)} b ON a.${q(rel.fromColumn)} = b.${q(rel.toColumn)}`;
+      join = `FROM ${q(a)} a JOIN ${q(b)} b ON ${relationshipJoin(rel)}`;
     for (const [seedType, seedKey, otherType, otherKey, outgoing] of [
       [from, fromKey, to, toKey, true],
       [to, toKey, from, fromKey, false],
@@ -465,7 +466,14 @@ export async function snapshotGraph(
   return {
     seeds,
     ids: [...new Set(ids)].filter((id) => !seeds.includes(id)),
-    links,
+    links: [
+      ...new Map(
+        links.map((link) => [
+          JSON.stringify([link.from, link.to, link.name]),
+          link,
+        ]),
+      ).values(),
+    ],
     counts: linkCounts,
     truncated,
   };
@@ -501,7 +509,7 @@ function linkCounting(
       a = from && tableOf.get(from.name),
       b = to && tableOf.get(to.name);
     if (!from || !to || !a || !b) return;
-    const join = `FROM ${q(a)} a JOIN ${q(b)} b ON a.${q(rel.fromColumn)} = b.${q(rel.toColumn)}`;
+    const join = `FROM ${q(a)} a JOIN ${q(b)} b ON ${relationshipJoin(rel)}`;
     if (from.name === t.name)
       links.push({
         alias: "o" + i,

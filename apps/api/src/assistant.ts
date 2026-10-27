@@ -4,6 +4,7 @@ import {
   assertOnboardingPublication,
 } from "./onboarding-state.js";
 import { effectiveObject } from "./context.js";
+import { relationshipJoin } from "./relationship-sql.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
@@ -351,6 +352,7 @@ export async function validateBundle(
       );
       const source = datasets.get(from.datasetId)!,
         target = datasets.get(to.datasetId)!;
+      assert(source && target, "Relationship dataset unavailable");
       const fromColumn = source.data.profile.columns.find(
           (c: any) => c.name === rel.fromColumn,
         ),
@@ -358,13 +360,71 @@ export async function validateBundle(
           (c: any) => c.name === rel.toColumn,
         );
       assert(fromColumn && toColumn, "Unknown relationship column");
-      const sql = `SELECT count(DISTINCT a.${q(from.primaryKey)}) AS total, count(DISTINCT CASE WHEN b.${q(to.primaryKey)} IS NOT NULL THEN a.${q(from.primaryKey)} END) AS "matched",count(b.${q(to.primaryKey)}) AS pairs FROM ${q(datasetTable(from.datasetId))} a LEFT JOIN ${q(datasetTable(to.datasetId))} b ON a.${q(rel.fromColumn)}=b.${q(rel.toColumn)}`;
+      const sourceTable = q(datasetTable(from.datasetId)),
+        targetTable = q(datasetTable(to.datasetId)),
+        join = relationshipJoin(rel);
+      const sql = `WITH matches AS (
+        SELECT a.${q(from.primaryKey)} AS source_key,
+          a.${q(rel.fromColumn)} AS match_value,
+          count(b.${q(to.primaryKey)}) AS targets
+        FROM ${sourceTable} a LEFT JOIN ${targetTable} b ON ${join}
+        GROUP BY a.${q(from.primaryKey)}, a.${q(rel.fromColumn)}
+      ) SELECT count(*) AS total,
+        count(*) FILTER (WHERE targets > 0) AS matched,
+        coalesce(sum(targets), 0) AS pairs,
+        count(*) FILTER (WHERE match_value IS NULL OR CAST(match_value AS VARCHAR) = '') AS empty,
+        count(*) FILTER (WHERE targets = 0 AND match_value IS NOT NULL AND CAST(match_value AS VARCHAR) <> '') AS unmatched,
+        count(*) FILTER (WHERE targets > 1) AS ambiguous,
+        (SELECT count(*) FROM (SELECT a.${q(rel.fromColumn)} FROM ${sourceTable} a
+          WHERE a.${q(rel.fromColumn)} IS NOT NULL AND EXISTS (SELECT 1 FROM ${targetTable} b WHERE ${join})
+          GROUP BY a.${q(rel.fromColumn)} HAVING count(*) > 1)) AS "duplicateSources"
+        FROM matches`;
       const r = await query([from.datasetId, to.datasetId], sql);
+      const counts = Object.fromEntries(
+        Object.entries(r.rows[0]).map(([key, value]) => {
+          const count = Number(value);
+          assert(
+            Number.isSafeInteger(count) && count >= 0,
+            "Invalid relationship count: " + key,
+          );
+          return [key, count];
+        }),
+      );
       const cardinality =
+        rel.cardinality ||
         (fromColumn.primaryKey ? "one" : "many") +
-        "-to-" +
-        (toColumn.primaryKey ? "one" : "many");
-      previews["relation:" + rel.name] = { rows: r.rows, cardinality };
+          "-to-" +
+          (toColumn.primaryKey ? "one" : "many");
+      previews["relation:" + rel.name] = { rows: [counts], cardinality };
+      if (rel.cardinality) {
+        const preview = previews["relation:" + rel.name];
+        preview.cardinality = rel.cardinality;
+        preview.matches = (
+          await query(
+            [from.datasetId, to.datasetId],
+            `SELECT a.${q(from.primaryKey)} AS from_key, a.${q(rel.fromColumn)} AS matching_value,
+              b.${q(to.primaryKey)} AS to_key FROM ${sourceTable} a JOIN ${targetTable} b ON ${join}
+              ORDER BY a.${q(from.primaryKey)}, b.${q(to.primaryKey)} LIMIT 10`,
+          )
+        ).rows;
+        preview.unmatched = (
+          await query(
+            [from.datasetId, to.datasetId],
+            `SELECT a.${q(from.primaryKey)} AS from_key, a.${q(rel.fromColumn)} AS matching_value
+              FROM ${sourceTable} a WHERE NOT EXISTS (SELECT 1 FROM ${targetTable} b WHERE ${join})
+              ORDER BY a.${q(from.primaryKey)} LIMIT 10`,
+          )
+        ).rows;
+        assert(
+          Number(r.rows[0].ambiguous) === 0,
+          "Ambiguous matches: multiple target records share a matching value. Choose a unique target field.",
+        );
+        if (rel.cardinality === "one-to-one")
+          assert(
+            Number(r.rows[0].duplicateSources) === 0,
+            "One-to-one requires each matched target to have at most one source record.",
+          );
+      }
       return `${r.rows[0].matched}/${r.rows[0].total} source objects matched; ${cardinality}; ${r.rows[0].pairs} relationship pairs`;
     });
   for (const d of bundle.dashboards)
@@ -958,7 +1018,7 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
       let plan = await ask(
         "analysis",
         analysis,
-        "Answer the question with one read-only SQL query. Refer to each dataset by its table value exactly. Return a short title and list unresolved business assumptions. Do not calculate results yourself. List every dataset the query reads in inputs. Stripe amounts (amount_* columns) are in cents: divide by 100.0 for currency. When joining tables with several rows per key (users and invoices of one account), aggregate each in its own subquery first so rows aren't multiplied.",
+        "Answer the question with one read-only SQL query. Refer to each dataset by its table value exactly; never infer or invent a table from a business concept. Return a short title and list unresolved business assumptions. Do not calculate results yourself. List every dataset the query reads in inputs. Stripe amounts (amount_* columns) are in cents: divide by 100.0 for currency. When joining tables with several rows per key (users and invoices of one account), aggregate each in its own subquery first so rows aren't multiplied.",
       );
       const map = await datasetsMap(store, scope);
       // The sandbox loads only the query's inputs, and the citations are the
@@ -1004,11 +1064,27 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
           ).slice(0, 800),
         };
         try {
+          const failedSql = plan.sql;
           plan = await ask(
             "analysis-repair",
             analysis,
-            "The query failed with the error in repair. Return a corrected read-only SQL query that uses only the listed dataset tables (their table names) and their columns, and list every dataset it reads in inputs.",
+            `The query failed with the error in repair. The only available dataset tables are: ${context.datasets.map((d: any) => d.table).join(", ")}. A table-not-found error means the query used an unavailable table: replace it with an available dataset table, and never invent a table from a business concept. Return a corrected read-only SQL query using only available dataset tables and their columns, and list every dataset it reads in inputs.`,
           );
+          const normalizeSql = (sql: string) =>
+            sql.replace(/\s+/g, " ").trim().toLowerCase();
+          if (normalizeSql(plan.sql) === normalizeSql(failedSql)) {
+            delete checkpoints["analysis-repair"];
+            context.repair.error =
+              `The previous repair returned the unchanged failing SQL. ${context.repair.error}`.slice(
+                0,
+                800,
+              );
+            plan = await ask(
+              "analysis-repair",
+              analysis,
+              `The previous repair returned the same SQL and would repeat the error. Do not return it again. The exact failing SQL and engine error are in repair. Rebuild the query using only these available dataset tables: ${context.datasets.map((d: any) => d.table).join(", ")}. Use only their listed columns, and list every dataset the new query reads in inputs.`,
+            );
+          }
           result = await query(plan);
         } catch (again) {
           delete checkpoints["analysis"];
@@ -1975,7 +2051,7 @@ export async function publishProposal(
         fromLookup = identities.get(rel.fromType)!,
         toLookup = identities.get(rel.toType)!;
       // Each pair of records is linked once, however many rows join them.
-      const sql = `SELECT DISTINCT a.${quote(fromType.primaryKey)} AS from_key,b.${quote(toType.primaryKey)} AS to_key FROM ${quote(datasetTable(fromType.datasetId))} a JOIN ${quote(datasetTable(toType.datasetId))} b ON a.${quote(rel.fromColumn)}=b.${quote(rel.toColumn)}`;
+      const sql = `SELECT DISTINCT a.${quote(fromType.primaryKey)} AS from_key,b.${quote(toType.primaryKey)} AS to_key FROM ${quote(datasetTable(fromType.datasetId))} a JOIN ${quote(datasetTable(toType.datasetId))} b ON ${relationshipJoin(rel)}`;
       for await (const batch of resultBatches(
         {
           scope,

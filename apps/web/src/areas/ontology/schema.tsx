@@ -75,13 +75,15 @@ export function publishedOntology(
     const c = confirmed?.links.find(
       (l) =>
         confirmedName.get(l.from) === r.fromType &&
-        confirmedName.get(l.to) === r.toType,
+        confirmedName.get(l.to) === r.toType &&
+        l.fromColumn === r.fromColumn &&
+        l.toColumn === r.toColumn,
     );
     const counts = previews["relation:" + r.name]?.rows?.[0];
     return [
       {
         id: "r" + i,
-        name: c?.name || r.name,
+        name: r.name,
         from,
         to,
         fromDatasetId: typeOf.get(r.fromType)?.data.datasetId || "",

@@ -17,4 +17,55 @@ export const RelationshipSchema = z.object({
   toType: z.string(),
   fromColumn: z.string(),
   toColumn: z.string(),
+  cardinality: z.enum(["many-to-one", "one-to-one"]).optional(),
+  refresh: z.boolean().optional(),
 });
+
+export type Relationship = z.infer<typeof RelationshipSchema>;
+export const RelationshipChangeSchema = z.discriminatedUnion("operation", [
+  z.object({
+    operation: z.literal("upsert"),
+    previousName: z.string().optional(),
+    relationship: RelationshipSchema.extend({
+      name: z.string().trim().min(1).max(120),
+      cardinality: z.enum(["many-to-one", "one-to-one"]),
+      refresh: z.boolean(),
+    }),
+  }),
+  z.object({
+    operation: z.literal("remove"),
+    previousName: z.string().min(1),
+  }),
+]);
+export type RelationshipChange = z.infer<typeof RelationshipChangeSchema>;
+export type RelationshipPreview = {
+  rows: {
+    total: number;
+    matched: number;
+    pairs: number;
+    empty: number;
+    unmatched: number;
+    ambiguous: number;
+    duplicateSources: number;
+  }[];
+  cardinality: string;
+  matches?: Record<string, unknown>[];
+  unmatched?: Record<string, unknown>[];
+};
+export type RelationshipRules = {
+  generation: string | null;
+  relationships: Relationship[];
+  previews: Record<string, RelationshipPreview>;
+  types: {
+    name: string;
+    columns: { name: string; type: string; sample: unknown[] }[];
+  }[];
+  refreshJob?: { status: string; error?: string; updatedAt: string };
+};
+export type RelationshipDraft = {
+  id: string;
+  hash: string;
+  valid: boolean;
+  checks: { name: string; passed: boolean; detail: string }[];
+  preview?: RelationshipPreview;
+};

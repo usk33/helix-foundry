@@ -61,6 +61,8 @@ In Compose, set `DUCKDB_SPILL_LIMIT`, `EXECUTOR_RESULT_LIMIT`, `EXECUTOR_QUERY_T
 
 The supported runtime is Node.js 24. There are no accounts: each installation serves one person on their own computer, who owns every workspace. API tokens are workspace scoped, optionally read-only, and revocable. See `VALIDATION.md` for benchmark scope and unverified deployment combinations.
 
+The single worker serves workspaces round-robin after each claimed job, so scheduled work in one workspace cannot indefinitely starve another workspace's imports. Jobs already running are not interrupted; a long import or AI build can still delay the next job. Setup distinguishes queued imports from running imports, and **View import progress** opens their status and available retry/cancel controls. Continue stays disabled until setup's required imports finish successfully.
+
 ## Memory
 
 HelixDB, the bundled model, the app, the worker and the executor share Docker's memory. Compose gives each service a budget and a place in the order the kernel stops them, so that when memory runs out the model or a single request fails with an error and HelixDB keeps running.
@@ -74,6 +76,8 @@ HelixDB, the bundled model, the app, the worker and the executor share Docker's 
 | `helix`    | 2 GB reserved, no limit  | `HELIX_MEMORY_RESERVATION` | 1.8–2.0 GB                                                               | Last (`0`)                         |
 
 - The app and worker have no memory limit on purpose. Node sizes its heap from the container limit, so a 2 GB limit caps the heap near 1.1 GB, and opening the graph explorer on a large workspace then crashes the app ("JavaScript heap out of memory"). Their `oom_score_adj` still puts them ahead of HelixDB when memory runs out.
+
+- Workspace deletion reads at most 100 record IDs per batch, removes relationships before records, and yields after at most ten batches or one second (checked between batches). Other workspaces' jobs can run between slices. The workspace marker stays until cleanup finishes; a global deletion reference also allows recovery when an interrupted older deletion already removed that marker. Deletion failures are logged and recorded on the global workspace reference under `deletion.error`; progress is recorded under `deletion.removed` and `deletion.updatedAt` after each incomplete slice. The removed count is informational and may undercount if the process stops between a batch and its progress update. Do not remove volumes or raise the Node heap to work around an old worker's unbounded workspace-deletion read; deploy the bounded deletion implementation instead.
 
 - `qwen3:4b` needs about 3.3 GB with an 8K context, and more for the 16K and 32K contexts used for long prompts. A prompt that does not fit in `OLLAMA_MEMORY_LIMIT` fails with an error; raise the limit on a machine with room to spare.
 - The model is unloaded 30 seconds after each answer instead of Ollama's default five minutes, so its memory comes back between questions. The next question reloads it in a few seconds. Set `MODEL_KEEP_ALIVE` (an Ollama duration such as `5m`, or `-1` to keep it loaded) to change this.

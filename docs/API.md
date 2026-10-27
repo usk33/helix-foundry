@@ -76,6 +76,28 @@ These routes require owner permissions and a writable credential or the local br
 | GET `/records/:logicalId`      | Current-generation record with effective values, workspace edits, related records, and action history; stable across publications |
 | GET `/objects/:id/neighbors`   | `{ ids }`; native Helix graph traversal                                                                                           |
 
+### Ontology relationship rules
+
+| Method / path | Input / result |
+| --- | --- |
+| GET `/ontology/relationships` | Active `generation`, relationship definitions, last validated coverage/samples, entity columns with sample values, and latest automatic refresh job status/error |
+| POST `/ontology/relationships/preview` | `{operation:"upsert", previousName?, relationship:{name,fromType,toType,fromColumn,toColumn,cardinality:"many-to-one"\|"one-to-one",refresh:boolean}}` or `{operation:"remove",previousName}`; returns `{id,hash,valid,checks,preview?}` |
+
+Preview requires editor access and creates a new proposal preserving other
+published definitions. `previousName` identifies the rule to edit; omitting it
+creates a rule and rejects a duplicate name. Publish a valid preview with
+`POST /proposals/:id/publish` and `{hash}`. Input or generation changes return
+409 and require a new preview. Removal keeps records and manual relationship
+overrides. `cardinality` and `refresh` are optional on legacy bundle definitions;
+legacy joins retain their original semantics. New explicit cardinalities exclude
+null/empty matching values and block ambiguous target matches.
+
+When a published rule has `refresh:true`, source changes queue a durable
+`relationship_refresh` job that validates and republishes the whole current
+bundle under the active publication actor's permissions. Failed jobs use normal
+bounded retries and findings; the previous generation stays visible. Preview
+counts describe generated links before manual overrides.
+
 ### Analyst
 
 | Method / path                                       | Input / result                                                                                            |
