@@ -167,6 +167,7 @@ Helix Foundry is built for one person on their own computer. There are no accoun
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Install profiles, diagnostics, change capture, backup, restore, upgrades, limits                                                                                          |
 | [docs/HOSTING.md](docs/HOSTING.md)       | Neon, Supabase and PlanetScale sign-in, scopes and permissions                                                                                                            |
 | [docs/API.md](docs/API.md)               | REST API reference, authentication and the TypeScript SDK                                                                                                                 |
+| [backlog/RBAC-IMPLEMENTATION.md](backlog/RBAC-IMPLEMENTATION.md) | Proposed workspace RBAC and within-workspace row/column data-isolation backlog |
 | [docs/VALIDATION.md](docs/VALIDATION.md) | Test results, benchmarks and known limits from the September and October 2026 validation runs; the backup, restore and upgrade scripts have only stub Docker tests so far |
 
 ## License

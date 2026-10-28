@@ -108,27 +108,6 @@ export function startWorker(store: Store) {
           });
           continue;
         }
-        if (!swept.has(scope)) {
-          swept.add(scope);
-          // A pass that fails runs again at the next start; jobs still run.
-          await reduceStoredDiscovery(store, scope).catch((e) =>
-            console.error(
-              "Worker: reducing stored discovery:",
-              e instanceof Error ? e.message : e,
-            ),
-          );
-          await compactStoredSamples(store, scope).catch((e) =>
-            console.error(
-              "Worker: compacting stored samples:",
-              e instanceof Error ? e.message : e,
-            ),
-          );
-          if (
-            (await store.get(scope, "workspace"))?.data.activeGeneration &&
-            !(await store.get(scope, "cleanup_state"))?.data.swept
-          )
-            await queueCleanup(store, scope);
-        }
         for (const source of await store.list(scope, "source"))
           if (scheduledRefresh(source) || needsChangeRefresh(source)) {
             await transaction(store, scope, async (tx) => {
@@ -166,7 +145,6 @@ export function startWorker(store: Store) {
               tx.update(s, { ...s.data, nextRun });
             });
           }
-        await queueRelationshipRefresh(store, scope);
         const runs = await store.list(scope, "run"),
           jobs = await store.list(scope, "job"),
           inputs = await buildSources(store, scope, runs);
@@ -242,6 +220,14 @@ export function startWorker(store: Store) {
           });
           if (!claimed) continue;
           lastServed = scope;
+          const startedAt = Date.now();
+          console.info("Worker: claimed", {
+            scope,
+            id: candidate.id,
+            kind: candidate.kind,
+            name: candidate.name,
+            attempt: (candidate.data.attempts || 0) + 1,
+          });
           const heartbeat = setInterval(
             () =>
               void transaction(store, scope, async (tx) => {
@@ -298,7 +284,18 @@ export function startWorker(store: Store) {
                   );
               });
             }
+            console.info("Worker: completed", {
+              scope,
+              id: candidate.id,
+              durationMs: Date.now() - startedAt,
+            });
           } catch (e) {
+            console.error("Worker: failed", {
+              scope,
+              id: candidate.id,
+              durationMs: Date.now() - startedAt,
+              error: e instanceof Error ? e.message : "Job failed",
+            });
             await transaction(store, scope, async (tx) => {
               const r = await tx.get(candidate.id);
               if (r && r.data.status !== "canceled") {
@@ -339,6 +336,30 @@ export function startWorker(store: Store) {
           }
           break;
         }
+        if (!swept.has(scope)) {
+          swept.add(scope);
+          console.info("Worker: maintenance started", { scope });
+          // A pass that fails runs again at the next start; jobs still run.
+          await reduceStoredDiscovery(store, scope).catch((e) =>
+            console.error(
+              "Worker: reducing stored discovery:",
+              e instanceof Error ? e.message : e,
+            ),
+          );
+          await compactStoredSamples(store, scope).catch((e) =>
+            console.error(
+              "Worker: compacting stored samples:",
+              e instanceof Error ? e.message : e,
+            ),
+          );
+          if (
+            (await store.get(scope, "workspace"))?.data.activeGeneration &&
+            !(await store.get(scope, "cleanup_state"))?.data.swept
+          )
+            await queueCleanup(store, scope);
+          console.info("Worker: maintenance completed", { scope });
+        }
+        await queueRelationshipRefresh(store, scope);
         const settings = await providerSettings(store, scope);
         if (
           settings.continuous &&
@@ -377,6 +398,7 @@ export function startWorker(store: Store) {
       busy = false;
     }
   };
+  console.info("Worker: started");
   let running = tick();
   const timer = setInterval(() => {
     if (!busy) running = tick();
